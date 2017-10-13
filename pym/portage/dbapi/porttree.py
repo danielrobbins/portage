@@ -255,6 +255,48 @@ class portdbapi(dbapi):
 		self._aux_cache = {}
 		self._broken_ebuilds = set()
 
+		# The purpose of self.better_cache is to perform an initial quick scan of all repositories
+		# using os.listdir, which is less expensive IO-wise. Then it compiles a list of repos in
+		# which particular catpkgs appear. For example, better_cache data may look like this:
+		#
+		# { "sys-apps/portage" : [ repo1, repo2 ] }
+		#
+		# This information can then be used by other functions like aux_get and findname2 to avoid
+		# doing an exhaustive search of repositories for ebuilds. Without this tweak, Portage will
+		# get slower and slower as more overlays are added.
+		#
+		# Also note that it is OK if this cache has some 'false positive' catpkgs in it. We use it
+		# to search for specific catpkgs listed in ebuilds. The likelihood of a false positive catpkg
+		# in our cache causing a problem is extremely low. Thus, the code below is optimized for
+		# speed rather than correctness.
+
+		self.better_cache = {}
+
+		for repo_loc in reversed(self.porttrees):
+			repo = self.repositories.get_repo_for_location(repo_loc)
+			try:
+				for d in os.listdir(repo_loc):
+					if d[0] == "." or d[0] == "-":
+						continue
+					cat_dir = repo_loc + "/" + d
+					if not os.path.isdir(cat_dir):
+						continue
+					try:
+						for p in os.listdir(cat_dir):
+							catpkg_dir = cat_dir + "/" + p
+							if not os.path.isdir(catpkg_dir):
+								continue
+							catpkg = d + "/" + p
+							if not catpkg in self.better_cache:
+								self.better_cache[catpkg] = []
+							self.better_cache[catpkg].append(repo)
+					except OSError:
+						# directory not readable?
+						continue
+			except OSError:
+				# directory does not exist?
+				continue
+
 	@property
 	def _event_loop(self):
 		if portage._internal_caller:
@@ -363,7 +405,7 @@ class portdbapi(dbapi):
 		"""
 		return self.settings.repositories.ignored_repos
 
-	def findname2(self, mycpv, mytree=None, myrepo = None):
+	def findname2(self, mycpv, mytree=None, myrepo=None):
 		""" 
 		Returns the location of the CPV, and what overlay it was in.
 		Searches overlays first, then PORTDIR; this allows us to return the first
@@ -374,29 +416,29 @@ class portdbapi(dbapi):
 		"""
 		if not mycpv:
 			return (None, 0)
-
-		if myrepo is not None:
-			mytree = self.treemap.get(myrepo)
-			if mytree is None:
-				return (None, 0)
-
+		
+		mytrees = []
 		mysplit = mycpv.split("/")
 		psplit = pkgsplit(mysplit[1])
 		if psplit is None or len(mysplit) != 2:
 			raise InvalidPackageName(mycpv)
+
+		cp = mysplit[0] + "/" + psplit[0]
+		if cp in self.better_cache:
+			for repo in self.better_cache[cp]:
+				if mytree and mytree != repo.location:
+					continue
+				elif (not myrepo) or \
+					(myrepo == repo.name) or \
+					(repo.aliases != None and myrepo in repo.aliases):
+					mytrees.append(repo.location)
 
 		# For optimal performace in this hot spot, we do manual unicode
 		# handling here instead of using the wrapped os module.
 		encoding = _encodings['fs']
 		errors = 'strict'
 
-		if mytree:
-			mytrees = [mytree]
-		else:
-			mytrees = reversed(self.porttrees)
-
-		relative_path = mysplit[0] + _os.sep + psplit[0] + _os.sep + \
-			mysplit[1] + ".ebuild"
+		relative_path = mysplit[0] + _os.sep + psplit[0] + _os.sep + mysplit[1] + ".ebuild"
 
 		for x in mytrees:
 			filename = x + _os.sep + relative_path
@@ -1234,3 +1276,5 @@ def _parse_uri_map(cpv, metadata, use=None):
 		uri_map[k] = tuple(v)
 
 	return uri_map
+
+# vim: ts=4 sw=4 noet

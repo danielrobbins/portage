@@ -5489,7 +5489,9 @@ class depgraph(object):
 		if cp_list:
 			atom_set = InternalPackageSet(initial_atoms=(atom,),
 				allow_repo=True)
-			if atom.repo is None and hasattr(db, "getRepositories"):
+			if atom.repo is None and hasattr(db, "better_cache") and atom_exp.cp in db.better_cache:
+				repo_list = list(map(lambda x: x.name, db.better_cache[atom_exp.cp]))
+			elif atom.repo is None and hasattr(db, "getRepositories"):
 				repo_list = db.getRepositories()
 			else:
 				repo_list = [atom.repo]
@@ -9899,3 +9901,5 @@ def _get_masking_status(pkg, pkgsettings, root_config, myrepo=None, use=None):
 			_MaskReason("invalid", "SLOT: undefined"))
 
 	return mreasons
+
+# vim: ts=4 sw=4 noet
